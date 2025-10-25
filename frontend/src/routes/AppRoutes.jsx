@@ -2,6 +2,15 @@ import React from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 
+// Public Pages
+import Home from '../pages/Home';
+import About from '../pages/About';
+import Features from '../pages/Features';
+import Services from '../pages/Services';
+import Gallery from '../pages/Gallery';
+import Careers from '../pages/Careers';
+import Contact from '../pages/Contact';
+
 // Auth Pages
 import Login from '../pages/Login';
 import Register from '../pages/Register';
@@ -28,6 +37,13 @@ const AppRoutes = () => {
   return (
     <Routes>
       {/* Public Routes */}
+      <Route path="/home" element={<Home />} />
+      <Route path="/about" element={<About />} />
+      <Route path="/features" element={<Features />} />
+      <Route path="/services" element={<Services />} />
+      <Route path="/gallery" element={<Gallery />} />
+      <Route path="/careers" element={<Careers />} />
+      <Route path="/contact" element={<Contact />} />
       <Route path="/login" element={<Login />} />
       <Route path="/register" element={<Register />} />
       <Route path="/unauthorized" element={<Unauthorized />} />
@@ -36,9 +52,11 @@ const AppRoutes = () => {
       <Route
         path="/"
         element={
-          <PrivateRoute>
+          isAuthenticated ? (
             <Navigate to={user?.role === 'admin' ? '/admin/dashboard' : '/user/dashboard'} replace />
-          </PrivateRoute>
+          ) : (
+            <Navigate to="/home" replace />
+          )
         }
       />
 
@@ -111,7 +129,7 @@ const AppRoutes = () => {
       />
 
       {/* Catch all route */}
-      <Route path="*" element={<Navigate to="/" replace />} />
+      <Route path="*" element={<Navigate to={isAuthenticated ? (user?.role === 'admin' ? '/admin/dashboard' : '/user/dashboard') : '/home'} replace />} />
     </Routes>
   );
 };
