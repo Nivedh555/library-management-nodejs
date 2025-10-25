@@ -1,16 +1,15 @@
 const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
-const connectDB = require('./config/db');
 const errorHandler = require('./utils/errorHandler');
+const supabase = require('./config/supabase');
 
 // Load environment variables
 dotenv.config();
 
-// Connect to database
-connectDB();
-
 const app = express();
+
+console.log('Supabase client initialized successfully');
 
 // Middleware
 app.use(cors());

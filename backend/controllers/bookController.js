@@ -1,35 +1,35 @@
 const { validationResult } = require('express-validator');
-const Book = require('../models/Book');
+const supabase = require('../config/supabase');
 
 const getAllBooks = async (req, res) => {
   try {
     const { page = 1, limit = 10, search, category } = req.query;
-    const query = {};
+    const offset = (page - 1) * limit;
+
+    let query = supabase.from('books').select('*', { count: 'exact' });
 
     if (search) {
-      query.$or = [
-        { title: { $regex: search, $options: 'i' } },
-        { author: { $regex: search, $options: 'i' } },
-        { isbn: { $regex: search, $options: 'i' } }
-      ];
+      query = query.or(`title.ilike.%${search}%,author.ilike.%${search}%,isbn.ilike.%${search}%`);
     }
 
     if (category) {
-      query.category = { $regex: category, $options: 'i' };
+      query = query.ilike('category', `%${category}%`);
     }
 
-    const books = await Book.find(query)
-      .limit(limit * 1)
-      .skip((page - 1) * limit)
-      .sort({ createdAt: -1 });
+    const { data: books, error, count } = await query
+      .order('created_at', { ascending: false })
+      .range(offset, offset + parseInt(limit) - 1);
 
-    const total = await Book.countDocuments(query);
+    if (error) {
+      console.error('Supabase query error:', error);
+      return res.status(500).json({ message: 'Error fetching books' });
+    }
 
     res.json({
-      books,
-      totalPages: Math.ceil(total / limit),
-      currentPage: page,
-      total
+      books: books || [],
+      totalPages: Math.ceil((count || 0) / limit),
+      currentPage: parseInt(page),
+      total: count || 0
     });
   } catch (error) {
     console.error('Get books error:', error);
@@ -39,9 +39,13 @@ const getAllBooks = async (req, res) => {
 
 const getBookById = async (req, res) => {
   try {
-    const book = await Book.findById(req.params.id);
-    
-    if (!book) {
+    const { data: book, error } = await supabase
+      .from('books')
+      .select('*')
+      .eq('id', req.params.id)
+      .maybeSingle();
+
+    if (error || !book) {
       return res.status(404).json({ message: 'Book not found' });
     }
 
@@ -59,25 +63,31 @@ const createBook = async (req, res) => {
       return res.status(400).json({ errors: errors.array() });
     }
 
-    const { title, author, category, isbn, copiesAvailable, totalCopies, description, publishedYear } = req.body;
+    const { title, author, isbn, category, description, publisher, publication_year, total_copies } = req.body;
 
-    const existingBook = await Book.findOne({ isbn });
-    if (existingBook) {
-      return res.status(400).json({ message: 'Book with this ISBN already exists' });
+    const { data: book, error } = await supabase
+      .from('books')
+      .insert([{
+        title,
+        author,
+        isbn,
+        category,
+        description,
+        publisher,
+        publication_year,
+        total_copies: total_copies || 1,
+        available_copies: total_copies || 1
+      }])
+      .select()
+      .single();
+
+    if (error) {
+      console.error('Supabase insert error:', error);
+      if (error.code === '23505') {
+        return res.status(400).json({ message: 'Book with this ISBN already exists' });
+      }
+      return res.status(500).json({ message: 'Error creating book' });
     }
-
-    const book = new Book({
-      title,
-      author,
-      category,
-      isbn,
-      copiesAvailable: copiesAvailable || totalCopies || 1,
-      totalCopies: totalCopies || 1,
-      description,
-      publishedYear
-    });
-
-    await book.save();
 
     res.status(201).json({
       message: 'Book created successfully',
@@ -96,33 +106,28 @@ const updateBook = async (req, res) => {
       return res.status(400).json({ errors: errors.array() });
     }
 
-    const book = await Book.findById(req.params.id);
-    
-    if (!book) {
+    const { title, author, isbn, category, description, publisher, publication_year, total_copies, available_copies } = req.body;
+
+    const { data: book, error } = await supabase
+      .from('books')
+      .update({
+        title,
+        author,
+        isbn,
+        category,
+        description,
+        publisher,
+        publication_year,
+        total_copies,
+        available_copies
+      })
+      .eq('id', req.params.id)
+      .select()
+      .single();
+
+    if (error || !book) {
       return res.status(404).json({ message: 'Book not found' });
     }
-
-    const { title, author, category, isbn, copiesAvailable, totalCopies, description, publishedYear } = req.body;
-
-    if (isbn && isbn !== book.isbn) {
-      const existingBook = await Book.findOne({ isbn });
-      if (existingBook) {
-        return res.status(400).json({ message: 'Book with this ISBN already exists' });
-      }
-    }
-
-    Object.assign(book, {
-      title: title || book.title,
-      author: author || book.author,
-      category: category || book.category,
-      isbn: isbn || book.isbn,
-      copiesAvailable: copiesAvailable !== undefined ? copiesAvailable : book.copiesAvailable,
-      totalCopies: totalCopies !== undefined ? totalCopies : book.totalCopies,
-      description: description || book.description,
-      publishedYear: publishedYear || book.publishedYear
-    });
-
-    await book.save();
 
     res.json({
       message: 'Book updated successfully',
@@ -136,13 +141,15 @@ const updateBook = async (req, res) => {
 
 const deleteBook = async (req, res) => {
   try {
-    const book = await Book.findById(req.params.id);
-    
-    if (!book) {
+    const { error } = await supabase
+      .from('books')
+      .delete()
+      .eq('id', req.params.id);
+
+    if (error) {
+      console.error('Supabase delete error:', error);
       return res.status(404).json({ message: 'Book not found' });
     }
-
-    await Book.findByIdAndDelete(req.params.id);
 
     res.json({ message: 'Book deleted successfully' });
   } catch (error) {
@@ -153,22 +160,35 @@ const deleteBook = async (req, res) => {
 
 const getBookStats = async (req, res) => {
   try {
-    const totalBooks = await Book.countDocuments();
-    const totalCopies = await Book.aggregate([
-      { $group: { _id: null, total: { $sum: '$totalCopies' } } }
-    ]);
-    const availableCopies = await Book.aggregate([
-      { $group: { _id: null, total: { $sum: '$copiesAvailable' } } }
-    ]);
+    const { data: books, error: booksError } = await supabase
+      .from('books')
+      .select('*');
+
+    if (booksError) {
+      return res.status(500).json({ message: 'Error fetching stats' });
+    }
+
+    const totalBooks = books.length;
+    const totalCopies = books.reduce((sum, book) => sum + (book.total_copies || 0), 0);
+    const availableCopies = books.reduce((sum, book) => sum + (book.available_copies || 0), 0);
+    const borrowedCopies = totalCopies - availableCopies;
+
+    const { data: categories } = await supabase
+      .from('books')
+      .select('category')
+      .order('category');
+
+    const uniqueCategories = [...new Set(categories?.map(c => c.category) || [])];
 
     res.json({
       totalBooks,
-      totalCopies: totalCopies[0]?.total || 0,
-      availableCopies: availableCopies[0]?.total || 0,
-      borrowedCopies: (totalCopies[0]?.total || 0) - (availableCopies[0]?.total || 0)
+      totalCopies,
+      availableCopies,
+      borrowedCopies,
+      totalCategories: uniqueCategories.length
     });
   } catch (error) {
-    console.error('Get book stats error:', error);
+    console.error('Get stats error:', error);
     res.status(500).json({ message: 'Server error' });
   }
 };
