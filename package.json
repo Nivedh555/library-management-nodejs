@@ -1,0 +1,16 @@
+{
+  "name": "libratech-library-management",
+  "version": "1.0.0",
+  "description": "LibraTech Solutions - Modern Library Management System",
+  "scripts": {
+    "install:all": "npm install --prefix backend && npm install --prefix frontend",
+    "dev:backend": "npm run start --prefix backend",
+    "dev:frontend": "npm start --prefix frontend",
+    "dev": "npm run dev:backend & npm run dev:frontend",
+    "build:frontend": "npm run build --prefix frontend",
+    "start": "npm run dev:frontend"
+  },
+  "keywords": ["library", "management", "supabase", "react", "express"],
+  "author": "LibraTech Solutions",
+  "license": "MIT"
+}
