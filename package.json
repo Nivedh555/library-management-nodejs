@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "LibraTech Solutions - Modern Library Management System",
   "scripts": {
-    "start": "cd frontend && npm start"
+    "start": "npm start --prefix frontend"
   },
   "keywords": ["library", "management", "supabase", "react", "express"],
   "author": "LibraTech Solutions",
