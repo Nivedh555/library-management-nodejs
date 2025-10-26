@@ -1,61 +1,65 @@
-const Borrow = require('../models/Borrow');
-const Book = require('../models/Book');
-const User = require('../models/User');
+const supabase = require('../config/supabase');
 
 const borrowBook = async (req, res) => {
   try {
+    const userId = req.user.id;
     const { bookId } = req.params;
-    const userId = req.user._id;
 
-    const book = await Book.findById(bookId);
-    if (!book) {
+    const { data: activeBorrows } = await supabase
+      .from('borrows')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('status', 'borrowed');
+
+    if (activeBorrows && activeBorrows.length >= 5) {
+      return res.status(400).json({ message: 'Maximum borrow limit (5 books) reached' });
+    }
+
+    const { data: book, error: bookError } = await supabase
+      .from('books')
+      .select('*')
+      .eq('id', bookId)
+      .single();
+
+    if (bookError || !book) {
       return res.status(404).json({ message: 'Book not found' });
     }
 
-    if (book.copiesAvailable <= 0) {
-      return res.status(400).json({ message: 'No copies available' });
+    if (book.available_copies <= 0) {
+      return res.status(400).json({ message: 'Book not available' });
     }
 
-    const existingBorrow = await Borrow.findOne({
-      userId,
-      bookId,
-      status: { $in: ['borrowed', 'overdue'] }
-    });
+    const dueDate = new Date();
+    dueDate.setDate(dueDate.getDate() + 14);
 
-    if (existingBorrow) {
-      return res.status(400).json({ message: 'You have already borrowed this book' });
+    const { data: borrow, error: borrowError } = await supabase
+      .from('borrows')
+      .insert([{
+        user_id: userId,
+        book_id: bookId,
+        due_date: dueDate.toISOString(),
+        status: 'borrowed'
+      }])
+      .select()
+      .single();
+
+    if (borrowError) {
+      console.error('Borrow insert error:', borrowError);
+      return res.status(500).json({ message: 'Error borrowing book' });
     }
 
-    const userActiveBorrows = await Borrow.countDocuments({
-      userId,
-      status: { $in: ['borrowed', 'overdue'] }
-    });
+    const { error: updateError } = await supabase
+      .from('books')
+      .update({ available_copies: book.available_copies - 1 })
+      .eq('id', bookId);
 
-    if (userActiveBorrows >= 5) {
-      return res.status(400).json({ message: 'Maximum borrow limit reached (5 books)' });
+    if (updateError) {
+      console.error('Book update error:', updateError);
     }
-
-    const borrow = new Borrow({
-      userId,
-      bookId
-    });
-
-    await borrow.save();
-
-    book.copiesAvailable -= 1;
-    await book.save();
-
-    await User.findByIdAndUpdate(userId, {
-      $addToSet: { borrowedBooks: bookId }
-    });
-
-    const populatedBorrow = await Borrow.findById(borrow._id)
-      .populate('bookId')
-      .populate('userId', 'name email');
 
     res.status(201).json({
       message: 'Book borrowed successfully',
-      borrow: populatedBorrow
+      borrow
     });
   } catch (error) {
     console.error('Borrow book error:', error);
@@ -65,49 +69,58 @@ const borrowBook = async (req, res) => {
 
 const returnBook = async (req, res) => {
   try {
+    const userId = req.user.id;
     const { bookId } = req.params;
-    const userId = req.user._id;
 
-    const borrow = await Borrow.findOne({
-      userId,
-      bookId,
-      status: { $in: ['borrowed', 'overdue'] }
-    });
+    const { data: borrow, error: borrowError } = await supabase
+      .from('borrows')
+      .select('*, books(*)')
+      .eq('user_id', userId)
+      .eq('book_id', bookId)
+      .eq('status', 'borrowed')
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
 
-    if (!borrow) {
+    if (borrowError || !borrow) {
       return res.status(404).json({ message: 'No active borrow record found' });
     }
 
-    const book = await Book.findById(bookId);
-    if (!book) {
-      return res.status(404).json({ message: 'Book not found' });
+    const returnDate = new Date();
+    const dueDate = new Date(borrow.due_date);
+    let fineAmount = 0;
+
+    if (returnDate > dueDate) {
+      const daysLate = Math.ceil((returnDate - dueDate) / (1000 * 60 * 60 * 24));
+      fineAmount = daysLate * 5;
     }
 
-    borrow.returnDate = new Date();
-    borrow.status = 'returned';
+    const { error: updateBorrowError } = await supabase
+      .from('borrows')
+      .update({
+        return_date: returnDate.toISOString(),
+        status: 'returned',
+        fine_amount: fineAmount
+      })
+      .eq('id', borrow.id);
 
-    if (new Date() > borrow.dueDate) {
-      const daysLate = Math.ceil((new Date() - borrow.dueDate) / (1000 * 60 * 60 * 24));
-      borrow.fine = daysLate * 5; // $5 per day fine
+    if (updateBorrowError) {
+      console.error('Borrow update error:', updateBorrowError);
+      return res.status(500).json({ message: 'Error updating borrow record' });
     }
 
-    await borrow.save();
+    const { error: updateBookError } = await supabase
+      .from('books')
+      .update({ available_copies: borrow.books.available_copies + 1 })
+      .eq('id', bookId);
 
-    book.copiesAvailable += 1;
-    await book.save();
-
-    await User.findByIdAndUpdate(userId, {
-      $pull: { borrowedBooks: bookId }
-    });
-
-    const populatedBorrow = await Borrow.findById(borrow._id)
-      .populate('bookId')
-      .populate('userId', 'name email');
+    if (updateBookError) {
+      console.error('Book update error:', updateBookError);
+    }
 
     res.json({
       message: 'Book returned successfully',
-      borrow: populatedBorrow,
-      fine: borrow.fine
+      fineAmount
     });
   } catch (error) {
     console.error('Return book error:', error);
@@ -115,59 +128,53 @@ const returnBook = async (req, res) => {
   }
 };
 
-const getUserBorrows = async (req, res) => {
+const getMyBorrows = async (req, res) => {
   try {
-    const userId = req.user._id;
-    const { status, page = 1, limit = 10 } = req.query;
+    const userId = req.user.id;
 
-    const query = { userId };
-    if (status) {
-      query.status = status;
+    const { data: borrows, error } = await supabase
+      .from('borrows')
+      .select('*, books(*)')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.error('Get borrows error:', error);
+      return res.status(500).json({ message: 'Error fetching borrows' });
     }
 
-    const borrows = await Borrow.find(query)
-      .populate('bookId')
-      .limit(limit * 1)
-      .skip((page - 1) * limit)
-      .sort({ createdAt: -1 });
-
-    const total = await Borrow.countDocuments(query);
-
-    res.json({
-      borrows,
-      totalPages: Math.ceil(total / limit),
-      currentPage: page,
-      total
-    });
+    res.json({ borrows: borrows || [] });
   } catch (error) {
-    console.error('Get user borrows error:', error);
+    console.error('Get my borrows error:', error);
     res.status(500).json({ message: 'Server error' });
   }
 };
 
 const getAllBorrows = async (req, res) => {
   try {
-    const { status, page = 1, limit = 10, userId, bookId } = req.query;
-    const query = {};
+    const { page = 1, limit = 10, status } = req.query;
+    const offset = (page - 1) * limit;
 
-    if (status) query.status = status;
-    if (userId) query.userId = userId;
-    if (bookId) query.bookId = bookId;
+    let query = supabase.from('borrows').select('*, users(name, email), books(title, author, isbn)', { count: 'exact' });
 
-    const borrows = await Borrow.find(query)
-      .populate('bookId')
-      .populate('userId', 'name email')
-      .limit(limit * 1)
-      .skip((page - 1) * limit)
-      .sort({ createdAt: -1 });
+    if (status) {
+      query = query.eq('status', status);
+    }
 
-    const total = await Borrow.countDocuments(query);
+    const { data: borrows, error, count } = await query
+      .order('created_at', { ascending: false })
+      .range(offset, offset + parseInt(limit) - 1);
+
+    if (error) {
+      console.error('Get all borrows error:', error);
+      return res.status(500).json({ message: 'Error fetching borrows' });
+    }
 
     res.json({
-      borrows,
-      totalPages: Math.ceil(total / limit),
-      currentPage: page,
-      total
+      borrows: borrows || [],
+      totalPages: Math.ceil((count || 0) / limit),
+      currentPage: parseInt(page),
+      total: count || 0
     });
   } catch (error) {
     console.error('Get all borrows error:', error);
@@ -175,24 +182,54 @@ const getAllBorrows = async (req, res) => {
   }
 };
 
+const updateOverdueStatus = async (req, res) => {
+  try {
+    const currentDate = new Date();
+
+    const { data: overdueBorrows } = await supabase
+      .from('borrows')
+      .select('*')
+      .eq('status', 'borrowed')
+      .lt('due_date', currentDate.toISOString());
+
+    if (overdueBorrows && overdueBorrows.length > 0) {
+      for (const borrow of overdueBorrows) {
+        await supabase
+          .from('borrows')
+          .update({ status: 'overdue' })
+          .eq('id', borrow.id);
+      }
+    }
+
+    res.json({
+      message: 'Overdue status updated',
+      updatedCount: overdueBorrows?.length || 0
+    });
+  } catch (error) {
+    console.error('Update overdue error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
 const getBorrowStats = async (req, res) => {
   try {
-    const totalBorrows = await Borrow.countDocuments();
-    const activeBorrows = await Borrow.countDocuments({ status: { $in: ['borrowed', 'overdue'] } });
-    const overdueBorrows = await Borrow.countDocuments({ status: 'overdue' });
-    const returnedBorrows = await Borrow.countDocuments({ status: 'returned' });
+    const { data: allBorrows } = await supabase
+      .from('borrows')
+      .select('*');
 
-    const totalFines = await Borrow.aggregate([
-      { $match: { fine: { $gt: 0 } } },
-      { $group: { _id: null, total: { $sum: '$fine' } } }
-    ]);
+    const totalBorrows = allBorrows?.length || 0;
+    const activeBorrows = allBorrows?.filter(b => b.status === 'borrowed').length || 0;
+    const overdueBorrows = allBorrows?.filter(b => b.status === 'overdue').length || 0;
+    const returnedBorrows = allBorrows?.filter(b => b.status === 'returned').length || 0;
+
+    const totalFines = allBorrows?.reduce((sum, b) => sum + (parseFloat(b.fine_amount) || 0), 0) || 0;
 
     res.json({
       totalBorrows,
       activeBorrows,
       overdueBorrows,
       returnedBorrows,
-      totalFines: totalFines[0]?.total || 0
+      totalFines
     });
   } catch (error) {
     console.error('Get borrow stats error:', error);
@@ -200,31 +237,11 @@ const getBorrowStats = async (req, res) => {
   }
 };
 
-const updateOverdueStatus = async (req, res) => {
-  try {
-    const result = await Borrow.updateMany(
-      {
-        status: 'borrowed',
-        dueDate: { $lt: new Date() }
-      },
-      { status: 'overdue' }
-    );
-
-    res.json({
-      message: 'Overdue status updated',
-      modifiedCount: result.modifiedCount
-    });
-  } catch (error) {
-    console.error('Update overdue status error:', error);
-    res.status(500).json({ message: 'Server error' });
-  }
-};
-
 module.exports = {
   borrowBook,
   returnBook,
-  getUserBorrows,
+  getMyBorrows,
   getAllBorrows,
-  getBorrowStats,
-  updateOverdueStatus
+  updateOverdueStatus,
+  getBorrowStats
 };
